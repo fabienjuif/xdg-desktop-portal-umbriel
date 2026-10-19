@@ -244,6 +244,27 @@ namespace xdpu {
       return bo;
     }
 
+    int dmabufPlaneCount(const FormatChoice& choice) {
+      if (!ensureGbmDevice()) {
+        return -1;
+      }
+      // An implicit layout has no modifier to query. Some drivers also cannot
+      // query explicit layouts which they can nevertheless allocate.
+      if (choice.modifier != DRM_FORMAT_MOD_INVALID) {
+        const int planes = gbm_device_get_format_modifier_plane_count(gbm, choice.drm, choice.modifier);
+        if (planes > 0) {
+          return planes;
+        }
+      }
+      gbm_bo* bo = createDmabufBo(choice.drm, choice.modifier);
+      if (bo == nullptr) {
+        return -1;
+      }
+      const int planes = gbm_bo_get_modifier(bo) == choice.modifier ? gbm_bo_get_plane_count(bo) : -1;
+      gbm_bo_destroy(bo);
+      return planes;
+    }
+
     bool supportsDmabuf(uint32_t format, uint64_t modifier) {
       if (!ensureGbmDevice()) {
         return false;
@@ -403,7 +424,7 @@ namespace xdpu {
       }
     }
 
-    void updateBufferParams(const FormatChoice& choice) {
+    bool updateBufferParams(const FormatChoice& choice) {
       std::array<uint8_t, 512> buffersStorage{};
       std::array<uint8_t, 256> headerMetaStorage{};
       std::array<uint8_t, 256> cursorMetaStorage{};
@@ -414,11 +435,13 @@ namespace xdpu {
       const uint32_t stride = choice.dmabuf ? 0 : width * bytesPerPixel(choice.drm);
       const uint32_t size = stride * height;
       const int dataTypes = choice.dmabuf ? (1 << SPA_DATA_DmaBuf) : (1 << SPA_DATA_MemFd);
-      const int blocks =
-          choice.dmabuf ? gbm_device_get_format_modifier_plane_count(gbm, choice.drm, choice.modifier) : 1;
+      const int blocks = choice.dmabuf ? dmabufPlaneCount(choice) : 1;
       if (blocks <= 0) {
-        fprintf(stderr, "pipewire: invalid plane count for negotiated DMA-BUF format\n");
-        return;
+        fprintf(
+            stderr, "pipewire: cannot determine plane count for DMA-BUF format 0x%08x modifier 0x%016llx\n", choice.drm,
+            static_cast<unsigned long long>(choice.modifier)
+        );
+        return false;
       }
 
       spa_pod_frame buffersFrame;
@@ -451,7 +474,7 @@ namespace xdpu {
             SPA_POD_Id(SPA_META_Cursor), SPA_PARAM_META_size, SPA_POD_Int(static_cast<int32_t>(kCursorMetaSize))
         ));
       }
-      pw_stream_update_params(stream, params.data(), paramCount);
+      return pw_stream_update_params(stream, params.data(), paramCount) >= 0;
     }
   };
 
@@ -580,7 +603,10 @@ namespace xdpu {
         impl.width = info.size.width;
         impl.height = info.size.height;
       }
-      impl.updateBufferParams(impl.negotiated);
+      if (!impl.updateBufferParams(impl.negotiated)) {
+        impl.negotiated.valid = false;
+        pw_stream_set_error(impl.stream, -EIO, "Unable to configure capture buffers");
+      }
     }
 
     void onStreamAddBuffer(void* data, pw_buffer* buffer) {

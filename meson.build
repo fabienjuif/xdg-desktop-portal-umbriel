@@ -101,6 +101,32 @@ executable(
   install_dir: get_option('libexecdir'),
 )
 
+# --- tests -------------------------------------------------------------------
+
+if get_option('tests')
+  buffer_params_test = executable(
+    'pipewire-buffer-params-test',
+    'tests/pipewire_buffer_params.cpp',
+    include_directories: include_directories('src'),
+    dependencies: [pipewire_dep, wayland_client_dep, libdrm_dep, gbm_dep],
+    # The test includes pipewire.cpp, so GCC treats its anonymous-namespace types as header types.
+    cpp_args: ['-ffunction-sections', '-fdata-sections', '-Wno-subobject-linkage'],
+    link_args: [
+      '-Wl,--gc-sections',
+      '-Wl,--wrap=gbm_device_get_format_modifier_plane_count',
+      '-Wl,--wrap=gbm_bo_create_with_modifiers2',
+      '-Wl,--wrap=gbm_bo_create_with_modifiers',
+      '-Wl,--wrap=gbm_bo_create',
+      '-Wl,--wrap=gbm_bo_get_modifier',
+      '-Wl,--wrap=gbm_bo_get_plane_count',
+      '-Wl,--wrap=gbm_bo_destroy',
+      '-Wl,--wrap=gbm_device_destroy',
+      '-Wl,--wrap=pw_stream_update_params',
+    ],
+  )
+  test('pipewire-buffer-params', buffer_params_test)
+endif
+
 # --- picker ------------------------------------------------------------------
 
 if gtk4_dep.found()
